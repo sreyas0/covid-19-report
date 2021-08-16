@@ -104,6 +104,8 @@ Here, an observation is that we can see the the recovered graph seems like a shi
 
 Let us try to estimate it with a model. Ill try to get the lag(the estimate) such that the mean squared error between the two data is minimum. For lagging I'll try to add 0 to the beginning of the cases vector and drop the corresponding number towards the end. I'll keep shifting such that the mse is minimum.
 
+## Model to find the average days of recovery from covid
+
 ```{r model}
 cases <- df_India_daily$incident_cases
 recovered <- df_India_daily$incident_recovered
