@@ -1,0 +1,187 @@
+---
+title: "COVID 19"
+author: "Sreyas"
+date: "15/08/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r results='hide', message=FALSE, warning=FALSE}
+library(tidyverse)
+library(lubridate)
+library(MLmetrics)
+```
+
+
+## Read Data
+
+The data I'll be using is available [here](https://github.com/CSSEGISandData/COVID-19). Specifically the time series data in csse_covid_19_data. 
+
+This github repository is managed by JHU. It also lists the sources from where this dataset has been curated from.
+
+```{r jhu_covid_read, message=FALSE}
+locs = NULL
+locs[1] = "./Data/time_series_covid19_confirmed_global.csv"
+locs[2] = "./Data/time_series_covid19_deaths_global.csv"
+locs[3] = "./Data/time_series_covid19_recovered_global.csv"
+
+df_confirmed_raw = read_csv(locs[1])
+df_deaths_raw = read_csv(locs[2])
+df_recovered_raw = read_csv(locs[3])
+```
+
+## Data head
+```{r data_head}
+head(df_confirmed_raw)
+```
+
+## Data Transformation
+
+This data is transformed to convert to a format that is easy for this analysis. This involves renaming a couple columns and pivoting such that the dates get transposed and the values are the cases(All three data have similar format except the values which are cases, deaths or recovered).
+
+From this transformed data we filter for two countries India and the US.
+
+```{r transform}
+df_confirmed <- df_confirmed_raw %>% rename(province = "Province/State", 
+                                        country_region = "Country/Region") %>% pivot_longer(cols = -c(`province`,`country_region`,Lat, Long), names_to = "date", values_to = "cases") %>% select(-c(Lat,Long)) %>% mutate(date = mdy(date))
+
+df_deaths <- df_deaths_raw %>% rename(province = "Province/State", 
+                                        country_region = "Country/Region") %>% pivot_longer(cols = -c(`province`,`country_region`,Lat, Long), names_to = "date", values_to = "deaths") %>% select(-c(Lat,Long)) %>% mutate(date = mdy(date))
+
+df_recovered <- df_recovered_raw %>% rename(province = "Province/State", 
+                                        country_region = "Country/Region") %>% pivot_longer(cols = -c(`province`,`country_region`,Lat, Long), names_to = "date", values_to = "recovered") %>% select(-c(Lat,Long)) %>% mutate(date = mdy(date))
+
+# all three data combined
+df_full <- df_confirmed %>% full_join(df_deaths) %>% full_join(df_recovered)
+df_full$cases[df_full$cases<0] <- 0
+df_full$recovered[df_full$recovered<0] <- 0
+df_full$deaths[df_full$deaths<0] <- 0
+
+# filtered data for India
+df_India = df_full %>% filter(country_region == "India")
+
+# Here recovered seems to have some of the last rows missing, this might be due to delay in data so I have removed the last few rows for this analysis
+
+n<-dim(df_India)[1]
+df_India<-df_India[1:(n-9),]
+
+# The values are cumulative values, so we take the difference to get the incidents per day.
+
+df_India_daily = df_India %>% 
+    mutate(incident_cases = c(0, diff(cases))) %>% mutate(incident_deaths = c(0, diff(deaths))) %>% mutate(incident_recovered = c(0,diff(recovered)))
+
+
+# filtered data for US
+df_US = df_full %>% filter(country_region == "US")
+
+# Removing same number of rows as in precious df for comparision
+
+n<-dim(df_US)[1]
+df_US<-df_US[1:(n-9),]
+
+df_US_daily = df_US %>% 
+    mutate(incident_cases = c(0, diff(cases))) %>% mutate(incident_deaths = c(0, diff(deaths))) %>% mutate(incident_recovered = c(0,diff(recovered)))
+
+```
+
+## India Covid timeline
+
+First lets plot the cases, deaths and recovered for India.
+
+```{r covid timeline}
+ggplot(main="graph") + 
+geom_line(data=df_India_daily, aes(x=date, y=incident_deaths, color="deaths")) + 
+geom_line(data=df_India_daily, aes(x=date, y=incident_recovered, color="recovered")) +
+geom_line(data=df_India_daily, aes(x=date, y=incident_cases, color="cases")) +
+ggtitle("India Covid timeline") +
+xlab("Date") + ylab("Value")
+```
+
+Here, an observation is that we can see the the recovered graph seems like a shift of the cases graph. If we try to shift and overlap them, we can get the best approximation to the average days for recovery.
+
+Let us try to estimate it with a model. Ill try to get the lag(the estimate) such that the mean squared error between the two data is minimum. For lagging I'll try to add 0 to the beginning of the cases vector and drop the corresponding number towards the end. I'll keep shifting such that the mse is minimum.
+
+```{r model}
+cases <- df_India_daily$incident_cases
+recovered <- df_India_daily$incident_recovered
+
+min_mse = MSE(cases,recovered)
+min_lag = 0
+mse_vec = NULL
+for (i in 1:30){
+    lagged_cases = c(rep(0, i), cases)[1:length(cases)]
+    mse = MSE(lagged_cases,recovered)
+    mse_vec[i] = mse
+    print(mse)
+    if (mse>min_mse){
+        min_lag = i
+        min_mse = mse}
+}
+
+plot(mse_vec)
+```
+
+We can clearly see that a lag of 10 seems to have the minimum mse. Hence we can say that the average days of recovery from covid in India is around 10 days.
+
+
+## India and US
+
+```{r cases}
+ggplot(main="graph") + 
+geom_line(data=df_India_daily, aes(x=date, y=incident_cases, color="India")) + 
+geom_line(data=df_US_daily, aes(x=date, y=incident_cases, color="US")) +
+     ggtitle("Cases: India vs US") +
+     xlab("Date") + ylab("Cases")
+```
+
+We can make the observation that second wave has been severe in India as it was. But this does not take population into account. Lets adjust for population i.e. get cases per million.
+
+
+```{r cases per million}
+ggplot(main="graph") + 
+     geom_line(data=df_India_daily, aes(x=date, y=incident_cases/1366400000, color="India")) + 
+     geom_line(data=df_US_daily, aes(x=date, y=incident_cases/328200000, color="US")) +
+     ggtitle("Cases: India vs US") +
+     xlab("Date") + ylab("Cases per million")
+```
+
+Here the scale totally changes and shows that the situation was much worse in the US as it was high for roughly 300 million compared to 1.3 billion in India.
+
+Let us see the graph for deaths as well.
+
+```{r death plot}
+ggplot(main="graph") + 
+     geom_line(data=df_India_daily, aes(x=date, y=incident_deaths/1366400000, color="India")) + 
+     geom_line(data=df_US_daily, aes(x=date, y=incident_deaths/328200000, color="US")) +
+     ggtitle("Deaths: India vs US") +
+     xlab("Date") + ylab("Deaths per million")
+```
+
+As expected this also seems high for the US as this is roughly a function proportional to the number of cases.
+
+Note: Here, we have to be vary of the bias in the data collection itself. Since the data is being collected by different agencies in different countries we can with a high probability assume bias in the data. Some can overestimate or underestimate. This is also heavily dependent on the number of tests being conducted in each country. If the tests are very less the obviously the bias remains at the beginning of the data collection pipeline itself.
+
+
+## Recoveries
+
+For recovery rate lets use the ratio of the cumulative numbers of recoveries to that of the confirmed cases.
+
+
+```{r recovered}
+ggplot(main="graph") + 
+     geom_line(data=df_India, aes(x=date, y=recovered/cases, color="India")) + 
+     ggtitle("Recovery rate: India vs US") +
+     xlab("Date") + ylab("Recovered rate")
+```
+
+
+We can observe that the recovery rate reaches one in India around march as there were very few cases and they recovered because hospitalization and intensive care was available. This also coupled with the lockdowns helped keep the recovery rate high. We can observe a dip around 2021-5 which was the peek of the second wave. Cases were huge reaching almost 400000 per day so the recovery rate has a dip here. And it is also obvious that the recovery rate will never reach one as there have been deaths.
+
+
+```{r session}
+sessionInfo()
+```
+
